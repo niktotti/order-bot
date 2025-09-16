@@ -2,6 +2,7 @@ import os
 import re
 import logging
 from datetime import datetime
+import tempfile
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -9,13 +10,13 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
 import gspread
+import json
 
-# ------------------ НАСТРОЙКИ ------------------
+# ------------------ Настройки ------------------
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID")
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "iPhone17_Orders")
-GOOGLE_JSON = os.getenv("GOOGLE_JSON", "google.json")
 
 if not TOKEN:
     raise RuntimeError("Не найден BOT_TOKEN в .env")
@@ -27,16 +28,25 @@ if MANAGER_CHAT_ID:
         logging.warning("MANAGER_CHAT_ID некорректен")
         MANAGER_CHAT_ID = None
 
-# Google Sheets
+# ------------------ Google Sheets через переменную окружения ------------------
+GOOGLE_JSON_CONTENT = os.getenv("GOOGLE_JSON_CONTENT")
+if GOOGLE_JSON_CONTENT:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+    tmp.write(GOOGLE_JSON_CONTENT.encode())
+    tmp.close()
+    GOOGLE_JSON_PATH = tmp.name
+else:
+    GOOGLE_JSON_PATH = "google.json"
+
 try:
-    gc = gspread.service_account(filename=GOOGLE_JSON)
+    gc = gspread.service_account(filename=GOOGLE_JSON_PATH)
     sheet = gc.open(SPREADSHEET_NAME).sheet1
     print("✅ Google Sheets подключена")
 except Exception as e:
     logging.warning("Ошибка подключения к Google Sheets: %s", e)
     sheet = None
 
-# ------------------ Конфиг сцен ------------------
+# ------------------ Сцены ------------------
 CHOOSING, MODEL, MEMORY, COLOR, CONFIRM, CONTACT = range(6)
 MODELS = ["iPhone 17", "iPhone 17 Pro", "iPhone 17 Pro Max", "iPhone 17 Air"]
 
