@@ -199,7 +199,7 @@ async def cb_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return COLOR
 
 # ------------------ Контакт и проверка телефона ------------------
-PHONE_RE = re.compile(r"(\+?\d[\d\s\-()]{5,}\d)")
+PHONE_RE = re.compile(r"^(?:\+7|8)?\s*\(?(\d{3})\)?[\s\-]?(\d{3})[\s\-]?(\d{2})[\s\-]?(\d{2})$")
 
 async def cb_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -215,12 +215,16 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m = PHONE_RE.search(text)
     if not m:
         await update.message.reply_text(
-            "⚠️ Введите корректный номер телефона вместе с ФИО.\nПример: Иванов Иван +79001234567"
+            "⚠️ Введите корректный номер телефона вместе с ФИО.\n"
+            "Допустимые форматы:\n"
+            "+7XXXXXXXXXX\n8XXXXXXXXXX\nXXXXXXXXXX (10 цифр)\nПример: Иванов Иван +79001234567"
         )
         return CONTACT
 
-    phone = m.group(1).strip()
-    fio = text.replace(m.group(1), "").strip()
+    digits = "".join(m.groups())
+    phone = "+7" + digits  # нормализуем номер к +7XXXXXXXXXX
+
+    fio = text.replace(m.group(0), "").strip()
     user = update.message.from_user
     nick = f"@{user.username}" if user.username else f"{user.first_name or ''} {user.last_name or ''}".strip() or str(user.id)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -245,11 +249,14 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 Дата: {now}"
     )
 
+    from telegram.helpers import escape_markdown
+    msg_safe = escape_markdown(msg, version=2)
+
     if MANAGER_CHAT_ID:
         try:
-            await context.bot.send_message(chat_id=MANAGER_CHAT_ID, text=msg, parse_mode="Markdown")
-        except Exception:
-            pass
+            await context.bot.send_message(chat_id=MANAGER_CHAT_ID, text=msg_safe, parse_mode="MarkdownV2")
+        except Exception as e:
+            logging.warning(f"Не удалось отправить сообщение менеджеру: {e}")
 
     await update.message.reply_text(
         "🚀 Спасибо! Мы сохранили ваш заказ 🎉\nМенеджеры скоро свяжутся с вами 📞",
