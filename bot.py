@@ -10,6 +10,7 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
 import gspread
+from telegram.helpers import escape_markdown
 
 # ------------------ Настройки ------------------
 load_dotenv()
@@ -74,8 +75,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ------------------ Клавиатуры ------------------
 def build_model_kb():
-    kb = [[InlineKeyboardButton(m, callback_data=f"model_{i}")] for i, m in enumerate(MODELS)]
-    return InlineKeyboardMarkup(kb)
+    return InlineKeyboardMarkup([[InlineKeyboardButton(m, callback_data=f"model_{i}")] for i, m in enumerate(MODELS)])
 
 def build_multi_kb(options, selected_set, prefix="opt"):
     kb = []
@@ -87,13 +87,12 @@ def build_multi_kb(options, selected_set, prefix="opt"):
     return InlineKeyboardMarkup(kb)
 
 def post_order_menu():
-    kb = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("📱 Новый предзаказ", callback_data="new_order")],
         [InlineKeyboardButton("📞 Связаться с менеджером", callback_data="contact_manager")],
         [InlineKeyboardButton("🔥 Акции", callback_data="show_sales")],
         [InlineKeyboardButton("ℹ️ О магазине", callback_data="about_shop")]
-    ]
-    return InlineKeyboardMarkup(kb)
+    ])
 
 # ------------------ Хендлеры ------------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -136,19 +135,13 @@ async def cb_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
     memory_options = context.user_data["memory_options"]
-
     if data.endswith("_done"):
         model = context.user_data["model"]
         photo_path = COLOR_IMAGES.get(model)
         if photo_path and os.path.exists(photo_path):
             with open(photo_path, "rb") as photo:
-                sent_photo = await context.bot.send_photo(
-                    chat_id=query.message.chat_id,
-                    photo=photo,
-                    caption=f"🎨 Доступные цвета для {model}:"
-                )
+                sent_photo = await context.bot.send_photo(chat_id=query.message.chat_id, photo=photo, caption=f"🎨 Доступные цвета для {model}:")
             context.user_data["color_photo_id"] = sent_photo.message_id
-
         await query.message.reply_text(
             "Теперь выберите цвет (можно несколько):",
             reply_markup=build_multi_kb(context.user_data["color_options"], context.user_data["colors"], prefix="col")
@@ -168,7 +161,6 @@ async def cb_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     color_options = context.user_data["color_options"]
-
     if query.data.endswith("_done"):
         photo_id = context.user_data.pop("color_photo_id", None)
         if photo_id:
@@ -176,7 +168,6 @@ async def cb_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.delete_message(chat_id=query.message.chat_id, message_id=photo_id)
             except Exception:
                 pass
-
         model = context.user_data["model"]
         mem = ", ".join(sorted(context.user_data["memory"])) or "(не выбрано)"
         cols = ", ".join(sorted(context.user_data["colors"])) or "(не выбрано)"
@@ -203,28 +194,20 @@ PHONE_RE = re.compile(r"(?:\+7|8)?(\d{10})")
 async def cb_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
-        "✍️ Пожалуйста, введите ваше *ФИО* и *номер телефона* в одной строке.\n\nПример: Иванов Иван +79001234567",
-        parse_mode="Markdown"
-    )
+    await query.edit_message_text("✍️ Пожалуйста, введите ваше *ФИО* и *номер телефона* в одной строке.\n\nПример: Иванов Иван +79001234567", parse_mode="Markdown")
     return CONTACT
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    
-    # Ищем номер
-    m = PHONE_RE.search(re.sub(r"\D", "", text))
+    digits_only = re.sub(r"\D", "", text)
+    m = PHONE_RE.search(digits_only)
     if not m:
         await update.message.reply_text(
-            "⚠️ Введите корректный номер телефона вместе с ФИО.\n"
-            "Допустимые форматы:\n"
-            "+7XXXXXXXXXX\n8XXXXXXXXXX\nXXXXXXXXXX (10 цифр)\nПример: Иванов Иван +79001234567"
+            "⚠️ Введите корректный номер телефона вместе с ФИО.\nДопустимые форматы:\n+7XXXXXXXXXX\n8XXXXXXXXXX\nXXXXXXXXXX (10 цифр)\nПример: Иванов Иван +79001234567"
         )
         return CONTACT
-
     digits = m.group(1)
     phone = "+7" + digits[-10:]  # нормализуем к +7XXXXXXXXXX
-
     fio = re.sub(r"\+?\d[\d\s\-()]+", "", text).strip()
     user = update.message.from_user
     nick = f"@{user.username}" if user.username else f"{user.first_name or ''} {user.last_name or ''}".strip() or str(user.id)
@@ -232,32 +215,20 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model = context.user_data["model"]
     memory = ", ".join(sorted(context.user_data["memory"]))
     colors = ", ".join(sorted(context.user_data["colors"]))
-
     if sheet:
         try:
             sheet.append_row([nick, phone, now, fio, model, memory, colors])
         except Exception as e:
             logging.warning("Ошибка при записи в Google Sheets: %s", e)
-
-    from telegram.helpers import escape_markdown
-    msg = (
-        f"📦 *Новый предзаказ!*\n\n"
-        f"👤 Пользователь: {nick}\n"
-        f"📇 ФИО: {fio}\n"
-        f"📞 Телефон: {phone}\n"
-        f"📱 Модель: {model}\n"
-        f"💾 Память: {memory}\n"
-        f"🎨 Цвет: {colors}\n"
-        f"🕒 Дата: {now}"
+    msg = escape_markdown(
+        f"📦 *Новый предзаказ!*\n\n👤 Пользователь: {nick}\n📇 ФИО: {fio}\n📞 Телефон: {phone}\n📱 Модель: {model}\n💾 Память: {memory}\n🎨 Цвет: {colors}\n🕒 Дата: {now}",
+        version=2
     )
-    msg_safe = escape_markdown(msg, version=2)
-
     if MANAGER_CHAT_ID:
         try:
-            await context.bot.send_message(chat_id=MANAGER_CHAT_ID, text=msg_safe, parse_mode="MarkdownV2")
+            await context.bot.send_message(chat_id=MANAGER_CHAT_ID, text=msg, parse_mode="MarkdownV2")
         except Exception as e:
             logging.warning(f"Не удалось отправить сообщение менеджеру: {e}")
-
     await update.message.reply_text(
         "🚀 Спасибо! Мы сохранили ваш заказ 🎉\nМенеджеры скоро свяжутся с вами 📞",
         reply_markup=post_order_menu(),
@@ -289,12 +260,9 @@ async def cb_about_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = (
-        "ℹ️ О магазине TechStore:\n"
-        "🏬 Адрес: ул. Примерная, 10, Москва\n"
-        "📞 Телефон: +7 (900) 123-45-67\n"
-        "🌐 Соц.сети: @techstore_vk, @techstore_telegram\n"
-        "🛡 Гарантия: 1 год на всю технику\n"
-        "🕒 Режим работы: Пн–Пт 10:00–20:00, Сб–Вс 11:00–18:00"
+        "ℹ️ О магазине TechStore:\n🏬 Адрес: ул. Примерная, 10, Москва\n"
+        "📞 Телефон: +7 (900) 123-45-67\n🌐 Соц.сети: @techstore_vk, @techstore_telegram\n"
+        "🛡 Гарантия: 1 год на всю технику\n🕒 Режим работы: Пн–Пт 10:00–20:00, Сб–Вс 11:00–18:00"
     )
     await query.message.reply_text(text, reply_markup=post_order_menu())
 
@@ -309,7 +277,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Операция отменена.", reply_markup=ReplyKeyboardRemove())
     context.user_data.clear()
     return ConversationHandler.END
-    
+
 # ------------------ Запуск ------------------
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -344,7 +312,7 @@ def main():
     app.add_handler(CommandHandler("sales", cmd_sales))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
 
-    print("🤖 Bot started — запустите в терминале. Ctrl+C для остановки.")
+    print("🤖 Бот запущен — polling активен")
     app.run_polling()
 
 if __name__ == "__main__":
