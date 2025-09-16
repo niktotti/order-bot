@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 import tempfile
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, ContextTypes, filters
@@ -72,14 +72,6 @@ COLOR_IMAGES = {
 
 logging.basicConfig(level=logging.INFO)
 
-# ------------------ Webhook cleanup ------------------
-bot = Bot(TOKEN)
-try:
-    bot.delete_webhook()
-    print("✅ Удалены все существующие webhooks, можно запускать polling")
-except Exception as e:
-    logging.warning(f"Не удалось удалить webhook: {e}")
-
 # ------------------ Клавиатуры ------------------
 def build_model_kb():
     kb = [[InlineKeyboardButton(m, callback_data=f"model_{i}")] for i, m in enumerate(MODELS)]
@@ -115,7 +107,95 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSING
 
-# --- остальные cb_start_order, cb_choose_model, cb_memory, cb_color аналогично твоему коду ---
+async def cb_start_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Выберите модель iPhone:", reply_markup=build_model_kb())
+    return MODEL
+
+async def cb_choose_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data.split("_")[1])
+    model = MODELS[idx]
+    context.user_data["model"] = model
+    context.user_data["memory"] = set()
+    context.user_data["colors"] = set()
+    context.user_data["memory_options"] = MEMORY_BY_MODEL[model]
+    context.user_data["color_options"] = COLOR_BY_MODEL[model]
+
+    await query.edit_message_text(
+        f"Вы выбрали: *{model}* ✅\n\nТеперь выберите объём памяти (можно несколько):",
+        reply_markup=build_multi_kb(context.user_data["memory_options"], context.user_data["memory"], prefix="mem"),
+        parse_mode="Markdown"
+    )
+    return MEMORY
+
+async def cb_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    memory_options = context.user_data["memory_options"]
+
+    if data.endswith("_done"):
+        model = context.user_data["model"]
+        photo_path = COLOR_IMAGES.get(model)
+        if photo_path and os.path.exists(photo_path):
+            with open(photo_path, "rb") as photo:
+                sent_photo = await context.bot.send_photo(
+                    chat_id=query.message.chat_id,
+                    photo=photo,
+                    caption=f"🎨 Доступные цвета для {model}:"
+                )
+            context.user_data["color_photo_id"] = sent_photo.message_id
+
+        await query.message.reply_text(
+            "Теперь выберите цвет (можно несколько):",
+            reply_markup=build_multi_kb(context.user_data["color_options"], context.user_data["colors"], prefix="col")
+        )
+        return COLOR
+    else:
+        opt = data.split("_", 1)[1].replace("_", " ")
+        sel = context.user_data.setdefault("memory", set())
+        if opt in sel:
+            sel.remove(opt)
+        else:
+            sel.add(opt)
+        await query.edit_message_reply_markup(reply_markup=build_multi_kb(memory_options, sel, prefix="mem"))
+        return MEMORY
+
+async def cb_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    color_options = context.user_data["color_options"]
+
+    if query.data.endswith("_done"):
+        photo_id = context.user_data.pop("color_photo_id", None)
+        if photo_id:
+            try:
+                await context.bot.delete_message(chat_id=query.message.chat_id, message_id=photo_id)
+            except Exception:
+                pass
+
+        model = context.user_data["model"]
+        mem = ", ".join(sorted(context.user_data["memory"])) or "(не выбрано)"
+        cols = ", ".join(sorted(context.user_data["colors"])) or "(не выбрано)"
+        summary = f"Ваш выбор:\n📱 {model}\n💾 {mem}\n🎨 {cols}"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Подтвердить заказ", callback_data="confirm_order")],
+            [InlineKeyboardButton("✏️ Изменить выбор", callback_data="edit_order")]
+        ])
+        await query.edit_message_text(summary, reply_markup=kb)
+        return CONFIRM
+    else:
+        opt = query.data.split("_", 1)[1].replace("_", " ")
+        sel = context.user_data.setdefault("colors", set())
+        if opt in sel:
+            sel.remove(opt)
+        else:
+            sel.add(opt)
+        await query.edit_message_reply_markup(reply_markup=build_multi_kb(color_options, sel, prefix="col"))
+        return COLOR
 
 # ------------------ Контакт и проверка телефона ------------------
 PHONE_RE = re.compile(r"(?:\+7|8)?(\d{10})")
@@ -132,8 +212,8 @@ async def cb_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
-    digits_only = re.sub(r"\D", "", text)
-    m = PHONE_RE.search(digits_only)
+    # Ищем номер
+    m = PHONE_RE.search(re.sub(r"\D", "", text))
     if not m:
         await update.message.reply_text(
             "⚠️ Введите корректный номер телефона вместе с ФИО.\n"
@@ -186,14 +266,85 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
+# ------------------ Кнопки после заказа ------------------
+async def cb_edit_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🔄 Давайте пересчитаем заново!\n\nВыберите модель:", reply_markup=build_model_kb())
+    return MODEL
+
+async def cb_contact_manager(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    text = "📞 Связаться с менеджером:\nТелефон: +7 (900) 123-45-67\nTelegram: @manager\nEmail: support@techstore.com"
+    await query.message.reply_text(text, reply_markup=post_order_menu())
+
+async def cb_show_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    text = "🔥 Текущие акции:\n- Скидка 20% на аксессуары при предзаказе\n- Рассрочка 0% на 6 месяцев"
+    await query.message.reply_text(text, reply_markup=post_order_menu())
+
+async def cb_about_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    text = (
+        "ℹ️ О магазине TechStore:\n"
+        "🏬 Адрес: ул. Примерная, 10, Москва\n"
+        "📞 Телефон: +7 (900) 123-45-67\n"
+        "🌐 Соц.сети: @techstore_vk, @techstore_telegram\n"
+        "🛡 Гарантия: 1 год на всю технику\n"
+        "🕒 Режим работы: Пн–Пт 10:00–20:00, Сб–Вс 11:00–18:00"
+    )
+    await query.message.reply_text(text, reply_markup=post_order_menu())
+
+# ------------------ Прочие команды ------------------
+async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("ℹ️ Наш магазин TechStore — официальные продажи, гарантия 1 год. Адрес: ул. Примерная, 10, Москва")
+
+async def cmd_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔥 Текущие акции:\n- Скидка 20% на аксессуары при предзаказе\n- Рассрочка 0% на 6 месяцев")
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Операция отменена.", reply_markup=ReplyKeyboardRemove())
+    context.user_data.clear()
+    return ConversationHandler.END
+    
 # ------------------ Запуск ------------------
 def main():
     app = Application.builder().token(TOKEN).build()
 
-    # Добавляешь все свои хендлеры и ConversationHandler здесь, как в текущем коде
-    # ...
+    conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", cmd_start),
+            CallbackQueryHandler(cb_start_order, pattern="^start_order$"),
+            CallbackQueryHandler(cb_start_order, pattern="^new_order$"),
+        ],
+        states={
+            CHOOSING: [CallbackQueryHandler(cb_start_order, pattern="^start_order$")],
+            MODEL: [CallbackQueryHandler(cb_choose_model, pattern="^model_")],
+            MEMORY: [CallbackQueryHandler(cb_memory, pattern="^mem_")],
+            COLOR: [CallbackQueryHandler(cb_color, pattern="^col_")],
+            CONFIRM: [
+                CallbackQueryHandler(cb_confirm_order, pattern="^confirm_order$"),
+                CallbackQueryHandler(cb_edit_order, pattern="^edit_order$")
+            ],
+            CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, contact_handler)],
+        },
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        allow_reentry=True,
+    )
 
-    print("🤖 Бот запущен — polling активен")
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(cb_edit_order, pattern="^edit_order$"))
+    app.add_handler(CallbackQueryHandler(cb_contact_manager, pattern="^contact_manager$"))
+    app.add_handler(CallbackQueryHandler(cb_show_sales, pattern="^show_sales$"))
+    app.add_handler(CallbackQueryHandler(cb_about_shop, pattern="^about_shop$"))
+    app.add_handler(CommandHandler("info", cmd_info))
+    app.add_handler(CommandHandler("sales", cmd_sales))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
+
+    print("🤖 Bot started — запустите в терминале. Ctrl+C для остановки.")
     app.run_polling()
 
 if __name__ == "__main__":
