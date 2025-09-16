@@ -10,7 +10,6 @@ from telegram.ext import (
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
 import gspread
-import json
 
 # ------------------ Настройки ------------------
 load_dotenv()
@@ -199,7 +198,7 @@ async def cb_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return COLOR
 
 # ------------------ Контакт и проверка телефона ------------------
-PHONE_RE = re.compile(r"^(?:\+7|8)?\s*\(?(\d{3})\)?[\s\-]?(\d{3})[\s\-]?(\d{2})[\s\-]?(\d{2})$")
+PHONE_RE = re.compile(r"(?:\+7|8)?(\d{10})")
 
 async def cb_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -212,7 +211,9 @@ async def cb_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    m = PHONE_RE.search(text)
+    
+    # Ищем номер
+    m = PHONE_RE.search(re.sub(r"\D", "", text))
     if not m:
         await update.message.reply_text(
             "⚠️ Введите корректный номер телефона вместе с ФИО.\n"
@@ -221,10 +222,10 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return CONTACT
 
-    digits = "".join(m.groups())
-    phone = "+7" + digits  # нормализуем номер к +7XXXXXXXXXX
+    digits = m.group(1)
+    phone = "+7" + digits[-10:]  # нормализуем к +7XXXXXXXXXX
 
-    fio = text.replace(m.group(0), "").strip()
+    fio = re.sub(r"\+?\d[\d\s\-()]+", "", text).strip()
     user = update.message.from_user
     nick = f"@{user.username}" if user.username else f"{user.first_name or ''} {user.last_name or ''}".strip() or str(user.id)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -238,6 +239,7 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.warning("Ошибка при записи в Google Sheets: %s", e)
 
+    from telegram.helpers import escape_markdown
     msg = (
         f"📦 *Новый предзаказ!*\n\n"
         f"👤 Пользователь: {nick}\n"
@@ -248,8 +250,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎨 Цвет: {colors}\n"
         f"🕒 Дата: {now}"
     )
-
-    from telegram.helpers import escape_markdown
     msg_safe = escape_markdown(msg, version=2)
 
     if MANAGER_CHAT_ID:
@@ -309,7 +309,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Операция отменена.", reply_markup=ReplyKeyboardRemove())
     context.user_data.clear()
     return ConversationHandler.END
-
+    
 # ------------------ Запуск ------------------
 def main():
     app = Application.builder().token(TOKEN).build()
